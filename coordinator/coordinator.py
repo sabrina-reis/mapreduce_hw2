@@ -223,13 +223,13 @@ def download(url="https://mattmahoney.net/dc/enwik9.zip"):
 if __name__ == "__main__":
 
     # specify URL to download dataset via OS environment variable
-    url = os.getenv("STR_URL", "https://mattmahoney.net/dc/enwik8.zip")
+    url = os.getenv("STR_URL", "https://mattmahoney.net/dc/enwik9.zip")
 
     # specify num workers via environment variable
     num_workers = int(os.getenv("NUM_WORKERS", "4"))
     
     # Download and unzip dataset    
-    # download(url)
+    download(url)
     
     start_time = time.time()
     
