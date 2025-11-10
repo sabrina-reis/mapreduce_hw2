@@ -7,6 +7,7 @@ import urllib.request
 from pathlib import Path
 from rpyc.utils.helpers import async_
 import os
+import collections
 
 def split_text(globs, max_chars=2**23):
     """
@@ -49,7 +50,7 @@ def split_text(globs, max_chars=2**23):
             buffer = ""
     return batched_text
 
-def dispatcher(batched_text, pool, func="", poll_interval=0.05, timeout=20):
+def dispatcher(batched_text, pool, func="", poll_interval=1, timeout=20):
     """ 
     Async task dispatcher for mapingp batches to workers.
     Check every poll_interval if the workers are complete and start a new batch.
@@ -60,6 +61,7 @@ def dispatcher(batched_text, pool, func="", poll_interval=0.05, timeout=20):
     pending = list(batched_text)
     num_workers = len(pool)
     results = []
+    timeouts = 0
 
     # Keep track of active workers and reassign tasks from stalled workers
     running = [None] * num_workers
@@ -67,58 +69,70 @@ def dispatcher(batched_text, pool, func="", poll_interval=0.05, timeout=20):
     # confirm list of tasks is non-empty and >= 1 worker running
     while pending or any(running):
 
-        now = time.time()
+        if timeouts >= num_workers - 1 and not any(running):
+            # If we reach this point it is because we timed out 
+            # too many times.
+            break
+        
+        # if we have failed too many times, the task is 
+        # too large and has to be done on the coordinator.
+        # However, we still need to loop until nothing else 
+        # is running.
+        if timeouts < num_workers - 1:
+            # Assign batches to any idle workers
+            for i, worker in enumerate(pool):
 
-        # Assign batches to any idle workers
-        for i, worker in enumerate(pool):
-
-            # if no workers running and there are still tasks:
-            if running[i] is None and pending:
-                print("Batching new work")
-                task = pending.pop(0) # pop off task from tasklist
-                # do non-blocking RPyC call to start worker
-                async_call = async_(getattr(worker.root, func))
-                # track running worker
-                running[i] = (task, async_call(task), now)
+                # if no workers running and there are still tasks:
+                if running[i] is None and pending:
+                    print("Batching new work")
+                    task = pending.pop(0) # pop off task from tasklist
+                    # do non-blocking RPyC call to start worker
+                    async_call = async_(getattr(worker.root, func))
+                    # track running worker
+                    running[i] = (task, async_call(task))
 
         # check if any workers have finished
         for i, entry in enumerate(running):
             if entry is not None:
-                task, future, start_time = entry
+                task, future = entry
+                
                 # add results from finished workers to array 
                 if future.ready:
-                    print("Copying completed work")
-                    results.append(future.value)
+                        
                     running[i] = None
 
-                # check if workers have exceeded time limit
-                # if so, add task back to task list
-                if now - start_time > timeout:
+                    if len(future.value) > 0:
+                        print("Copying completed work")
+                        results.append(future.value)
+                    
+                    else:
 
-                    # check if workers have exceeded time limit
-                    if now - start_time > timeout:
-                        # reassign task to another available worker
                         found = False
-                        for j, worker in enumerate(pool):
-                            # try to find other available worker
-                            if i != j and running[j] is not None:
-                                print(f"Task timed out, reassigning work from {i} to {j}")
-                                async_call = async_(getattr(worker.root, func))
-                                running[j] = (task, async_call(task), now)
-                                running[i] = None
-                                found = True
-                                break
-
+                        timeouts += 1
+                        
+                        if timeouts < num_workers - 1:
+                            # reassign task to another available worker
+                            for j, worker in enumerate(pool):
+                                # try to find other available worker
+                                if i != j and running[j] is None:
+                                    print(f"Task timed out, reassigning work from {i+1} to {j+1}")
+                                    async_call = async_(getattr(worker.root, func))
+                                    running[j] = (task, async_call(task))
+                                    found = True
+                                    break
+                        
                         # if no other worker found, put task back in pool
                         # not perfect guarantee of retrying with different worker,
                         # but maybe current worker just needs a quick break :)
                         if not found:
-                            pending.append(task)
+                            print("No open workers, pending task.")
+                            pending.append(task)    
 
         # don't check running tasks too frequently
         time.sleep(poll_interval)
 
-    return results
+    success = timeouts < num_workers - 1
+    return results, pending, success
 
 def mapreduce_wordcount(text, num_workers : int):
     """
@@ -138,7 +152,7 @@ def mapreduce_wordcount(text, num_workers : int):
     # Send batches to workers, recieve batched maps
     
     print(f"Mapping {len(batched_text)} chunks to {num_workers} workers.")
-    batched_maps = dispatcher(batched_text, pool, "map")
+    batched_maps, _, _ = dispatcher(batched_text, pool, "map")
 
     reducing = True
     reduced_maps = []
@@ -155,17 +169,35 @@ def mapreduce_wordcount(text, num_workers : int):
         # send list of paired lists to workers. NOTE: My Mac isn't 
         # fast enough to do the reductions on multiple threads, so 
         # no matter what we just use one.
-        reduced_maps = dispatcher(chunked_maps, pool, "reduce")
+        reduced_maps, pending, success = dispatcher(chunked_maps, pool, "reduce")
         
+        if not success:
+            print("Reduce workers taking too long. Reducing on coordinator.")
+            batched_maps = reduced_maps
+
+            # move all of the pending work
+            for batch in pending:
+                for b in batch:
+                    batched_maps.append(b)
+            
+            # exit the loop
+            break
+
         # since dispatcher returns a list of lists, final reduce should be 
         # list of one sublist of all reduced sums
-        if len(reduced_maps) == 1:
+        elif len(reduced_maps) < 4:
             reducing = False
         
         # update batched_maps to reduced values, e.g. 8 lists becomes 4
         else:
             batched_maps = reduced_maps
-    reduced_maps = sorted(reduced_maps[0], key=operator.itemgetter(1), reverse=True)
+    
+    print("Performing final reduction")
+    final_reduce = collections.defaultdict(int)
+    for partition in batched_maps:
+        for key, value in partition:
+            final_reduce[key] += value
+    final_reduce = sorted(list(final_reduce.items()), key=operator.itemgetter(1), reverse=True)
 
     # Shutdown all workers 
     for c in pool:
@@ -175,7 +207,7 @@ def mapreduce_wordcount(text, num_workers : int):
         except:
             print("Worker successfully terminated.")
     # return total_counts
-    return reduced_maps
+    return final_reduce
 
 # The Coordinator can exit when all Map and Reduce Tasks have finished.
 # Number of Map and Reduce Workers should be configurable via command-line
@@ -199,7 +231,7 @@ if __name__ == "__main__":
     num_workers = int(os.getenv("NUM_WORKERS", "4"))
     
     # Download and unzip dataset    
-    # download(url)
+    download(url)
     
     start_time = time.time()
     
