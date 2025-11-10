@@ -106,7 +106,6 @@ def dispatcher(batched_text, pool, func="", poll_interval=1, timeout=20):
                         results.append(future.value)
                     
                     else:
-
                         found = False
                         timeouts += 1
                         
@@ -150,7 +149,6 @@ def mapreduce_wordcount(text, num_workers : int):
         pool.append(conn)
 
     # Send batches to workers, recieve batched maps
-    
     print(f"Mapping {len(batched_text)} chunks to {num_workers} workers.")
     batched_maps, _, _ = dispatcher(batched_text, pool, "map")
 
@@ -231,7 +229,7 @@ if __name__ == "__main__":
     num_workers = int(os.getenv("NUM_WORKERS", "4"))
     
     # Download and unzip dataset    
-    download(url)
+    # download(url)
     
     start_time = time.time()
     
