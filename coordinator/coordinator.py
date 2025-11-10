@@ -69,7 +69,7 @@ def dispatcher(batched_text, pool, func="", poll_interval=1, timeout=20):
     # confirm list of tasks is non-empty and >= 1 worker running
     while pending or any(running):
 
-        if timeouts >= num_workers - 1 and not any(running):
+        if timeouts >= num_workers and not any(running):
             # If we reach this point it is because we timed out 
             # too many times.
             break
@@ -78,7 +78,7 @@ def dispatcher(batched_text, pool, func="", poll_interval=1, timeout=20):
         # too large and has to be done on the coordinator.
         # However, we still need to loop until nothing else 
         # is running.
-        if timeouts < num_workers - 1:
+        if timeouts < num_workers:
             # Assign batches to any idle workers
             for i, worker in enumerate(pool):
 
@@ -131,7 +131,7 @@ def dispatcher(batched_text, pool, func="", poll_interval=1, timeout=20):
         # don't check running tasks too frequently
         time.sleep(poll_interval)
 
-    success = timeouts < num_workers - 1
+    success = timeouts < num_workers
     return results, pending, success
 
 def mapreduce_wordcount(text, num_workers : int):
