@@ -8,7 +8,7 @@ from pathlib import Path
 from rpyc.utils.helpers import async_
 import os
 
-def split_text(globs, max_chars=2**26):
+def split_text(globs, max_chars=2**23):
     """
     Splits input text files into chunks. Chunks are roughly even depending
     on word length to ensure work doesn't exceed time limit. 
