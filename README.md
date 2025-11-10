@@ -7,5 +7,3 @@ git clone https://github.com/sabrina-reis/mapreduce_hw2.git
 cd mapreduce_hw2
 NUM_WORKERS=4 docker compose up --scale worker=4
 ```
-
-# mapreduce_hw2
